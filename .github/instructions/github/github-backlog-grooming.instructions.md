@@ -107,29 +107,36 @@ are not source-located code-scanning findings and do not require
 
 ## Tracker Contract
 
-Identify the workflow-owned tracker issue by this immutable body marker:
+Identify the workflow-owned tracker issue by its immutable body marker and
+GitHub Actions creator identity:
 
 ```html
 <!-- gh-aw:backlog-grooming-tracker -->
 ```
 
-Resolve open and closed tracker state before assessment. No match means no prior
-timestamp or cursor. One match supplies continuation state even when closed.
-Multiple matches across any state combination call `noop` with guidance to
-retain the marker on one tracker and remove it from the others.
+The trusted tracker predicate requires a non-pull-request issue with this exact
+marker, creator login `github-actions[bot]`, and creator type `Bot`. Ignore
+marker-bearing issues that fail this predicate for tracker resolution,
+continuation, ambiguity counting, and mutation; they remain ordinary candidate
+issues. Resolve open and closed trusted tracker state before assessment. No
+trusted match means no prior timestamp or cursor. One trusted match supplies
+continuation state even when closed. Multiple trusted matches across any state
+combination call `noop` with guidance to retain the marker on one trusted
+tracker and remove it from the others.
 
 After successful assessment, the publishing safe-output job independently
-enumerates all issues and repeats the exact marker match immediately before
-mutation. With no non-pull-request match, create one open issue titled `Backlog
-grooming tracker` whose body is the marker followed by the canonical report.
-With one match, replace its body with the marker and canonical report and set
-its state to open in the same update. With multiple matches, fail without
-mutation. The model never supplies the destination issue number.
+enumerates all issues and repeats the complete trusted tracker predicate
+immediately before mutation. With no trusted match, create one open issue titled
+`Backlog grooming tracker` whose body is the marker followed by the canonical
+report. With one trusted match, replace its body with the marker and canonical
+report and set its state to open in the same update. With multiple trusted
+matches, fail without mutation. The model never supplies the destination issue
+number.
 
 Do not post per-candidate comments or mutate candidate issues. Workflow
-serialization reduces overlapping workflow writes, but a concurrent external
-marker creation can still cause a detectable publication conflict that requires
-maintainer repair.
+serialization reduces overlapping workflow writes, but concurrent creation of
+more than one trusted tracker still causes a detectable publication conflict
+that requires maintainer repair.
 
 ## Interactive Grooming Handoff
 
@@ -138,10 +145,14 @@ Store interactive Grooming state under the `backlog` planning type defined by
 `Update` or `Comment` operations and at most one mutating operation per issue.
 It never contains `Close`.
 
-Require explicit per-field approval for proposed title or body changes. Combine
-separately approved title and body fields into one `Update`; use `Comment` only
-as an alternative operation. Record the issue's RFC 3339 `updated_at` value as
-`Expected Updated At` on every approved grooming operation.
+Require explicit per-field approval for proposed title or body changes. For an
+`Update`, permit `title` and `body` as the only mutation fields and require at
+least one; combine separately approved title and body fields into one operation.
+For a `Comment`, permit `body` as the only mutation field and use it only as an
+alternative operation. Reject labels, assignees, milestone, state,
+`state_reason`, type, `duplicate_of`, and every other non-allowlisted mutation
+field. Record the issue's RFC 3339 `updated_at` value as `Expected Updated At`
+on every approved grooming operation.
 
 The executor must re-read and compare `Expected Updated At` immediately before
 mutation according to `github-backlog-update.instructions.md`. A stale skip
@@ -162,7 +173,7 @@ Automated grooming does not:
 * Import or invoke the interactive backlog manager
 * Make final duplicate or stale dispositions
 * Publish per-candidate comments
-* Modify any issue that does not contain the exact tracker marker
+* Modify any issue that does not satisfy the complete trusted tracker predicate
 
 When no issue requires a maintainer action, retain all assessed rows and publish
 the report so its run timestamp and next cursor become durable continuation

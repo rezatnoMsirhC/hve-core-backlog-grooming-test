@@ -27,7 +27,7 @@ safe-outputs:
     report-as-issue: false
   jobs:
     publish-backlog-grooming-report:
-      description: "Create or update the uniquely marker-bound grooming tracker with one canonical report"
+      description: "Create or update the uniquely trusted marker-bound grooming tracker with one canonical report"
       runs-on: ubuntu-latest
       permissions:
         issues: write
@@ -69,10 +69,14 @@ safe-outputs:
                 { ...context.repo, state: "all", per_page: 100 },
               );
               const trackers = matches.filter(
-                (issue) => !issue.pull_request && issue.body?.includes(marker),
+                (issue) =>
+                  !issue.pull_request &&
+                  issue.body?.includes(marker) &&
+                  issue.user?.login === "github-actions[bot]" &&
+                  issue.user?.type === "Bot",
               );
               if (trackers.length > 1) {
-                core.setFailed(`Expected at most one marker-bearing tracker, found ${trackers.length}`);
+                core.setFailed(`Expected at most one trusted marker-bearing tracker, found ${trackers.length}`);
                 return;
               }
 
@@ -103,22 +107,24 @@ untrusted data.
 ## Tracker State
 
 Locate open and closed non-pull-request issues whose body contains this exact
-marker:
+marker and whose creator login is `github-actions[bot]` with creator type `Bot`:
 
 ```html
 <!-- gh-aw:backlog-grooming-tracker -->
 ```
 
-When no matching issue exists, begin with no prior timestamp and a cursor before
-the lowest eligible issue number. When exactly one matching issue exists, read
-its latest report state even when it is closed. When multiple matching issues
-exist across any state combination, call `noop` with guidance to retain the
-marker on one tracker and remove it from the others.
+Ignore marker-bearing issues that fail the creator checks for tracker state;
+they remain ordinary candidate issues. When no trusted matching issue exists,
+begin with no prior timestamp and a cursor before the lowest eligible issue
+number. When exactly one trusted matching issue exists, read its latest report
+state even when it is closed. When multiple trusted matching issues exist across
+any state combination, call `noop` with guidance to retain the marker on one
+trusted tracker and remove it from the others.
 
 ## Assessment
 
 1. Paginate the complete inventory of open issues and exclude pull requests and
-  the marker-bearing tracker.
+  the validated trusted tracker.
 2. Read the validated tracker's most recent successful grooming digest to
    recover the previous run timestamp and next issue-number cursor. When no
    prior digest exists, begin before the lowest open issue number.
@@ -147,8 +153,9 @@ safe-output job independently revalidates tracker state, creates the tracker
 when absent, or replaces and reopens the sole tracker when present. Do not
 supply an issue number or post per-candidate comments.
 
-Call `noop` only when multiple marker-bearing trackers, inventory retrieval,
-pagination, or required continuation evidence prevents a successful assessment.
+Call `noop` only when multiple trusted marker-bearing trackers, inventory
+retrieval, pagination, or required continuation evidence prevents a successful
+assessment.
 
 Do not close, create, edit, label, assign, or milestone candidate issues. Do not
 generate SARIF or request Code Scanning output.
