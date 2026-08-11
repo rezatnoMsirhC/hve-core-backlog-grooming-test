@@ -152,6 +152,12 @@ as the assessment status and state the reason when a selected issue was not
 deeply assessed. Include `Distinct` and no-change results. When no issues were
 selected, render `No issues assessed` instead of omitting the table.
 
+In structured report data, every issue includes `lineage_evidence` with exactly
+`original_delivery` and `replacement_or_removal` arrays. Both arrays are
+non-empty and contain distinct stable identifiers for `Superseded`; use empty
+arrays when a lineage category does not apply. Render these identifiers in the
+Repository evidence cell with their lineage category.
+
 Encode every untrusted text cell before rendering Markdown: escape backslashes
 and pipe characters, replace line breaks with `<br>`, remove ASCII control
 characters, and neutralize mention-like text by inserting a zero-width space

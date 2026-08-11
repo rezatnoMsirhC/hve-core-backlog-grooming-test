@@ -156,6 +156,10 @@ For tracker publication, encode the same report as JSON with exactly `run` and
       "activity_and_ownership_context": "non-empty text",
       "acceptance_signals": "non-empty text",
       "repository_evidence": ["stable evidence identifier"],
+      "lineage_evidence": {
+        "original_delivery": [],
+        "replacement_or_removal": []
+      },
       "similarity_outcome": "Distinct",
       "disposition": "Still needed",
       "grooming_finding": "non-empty text",
@@ -174,7 +178,12 @@ enum value. Use exactly `Still needed`, `Likely completed`, `Superseded`,
 Use exactly `Assessed` or `Deferred` for `assessment_status`. Each issue object
 includes a non-empty `repository_evidence` array of stable paths, issue or
 pull-request numbers, commit identifiers, release identifiers, or recorded
-negative-search scopes. Do not rename, add, or omit keys, interpolate issue
-text into keys, or omit a selected issue. Preserve raw text values in JSON;
-apply cell escaping only to the model-facing Markdown. The publisher
-independently escapes raw JSON values when rendering its Markdown.
+negative-search scopes. Each issue also includes `lineage_evidence` with exactly
+`original_delivery` and `replacement_or_removal` arrays. For `Superseded`, both
+arrays contain non-empty, distinct issue, pull-request, commit, release, or path
+identifiers establishing the original delivery and later replacement or
+removal. For other dispositions, use empty arrays when that lineage does not
+apply. Do not rename, add, or omit keys, interpolate issue text into keys, or
+omit a selected issue. Preserve raw text values in JSON; apply cell escaping
+only to the model-facing Markdown. The publisher independently escapes raw JSON
+values when rendering its Markdown.

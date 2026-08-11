@@ -81,7 +81,8 @@ safe-outputs:
                 return;
               }
               const runKeys = ["timestamp", "total_open_inventory", "assessed", "priority_cohort", "round_robin_cohort", "deferred", "stop_reason", "next_cursor"];
-              const rowKeys = ["issue", "title", "selection_reason", "activity_and_ownership_context", "acceptance_signals", "repository_evidence", "similarity_outcome", "disposition", "grooming_finding", "recommended_next_step", "assessment_status"];
+              const rowKeys = ["issue", "title", "selection_reason", "activity_and_ownership_context", "acceptance_signals", "repository_evidence", "lineage_evidence", "similarity_outcome", "disposition", "grooming_finding", "recommended_next_step", "assessment_status"];
+              const lineageKeys = ["original_delivery", "replacement_or_removal"];
               const similarities = new Set(["Match", "Similar", "Distinct", "Uncertain"]);
               const dispositions = new Set(["Still needed", "Likely completed", "Superseded", "Possible duplicate", "Needs correction", "Uncertain"]);
               const statuses = new Set(["Assessed", "Deferred"]);
@@ -105,6 +106,11 @@ safe-outputs:
                     !validText(row.activity_and_ownership_context) || !validText(row.acceptance_signals) ||
                     !Array.isArray(row.repository_evidence) || row.repository_evidence.length === 0 ||
                     !row.repository_evidence.every((item) => validText(item, 500)) ||
+                    !exactKeys(row.lineage_evidence, lineageKeys) ||
+                    !Array.isArray(row.lineage_evidence.original_delivery) ||
+                    !Array.isArray(row.lineage_evidence.replacement_or_removal) ||
+                    !row.lineage_evidence.original_delivery.every((item) => validText(item, 500)) ||
+                    !row.lineage_evidence.replacement_or_removal.every((item) => validText(item, 500)) ||
                     !similarities.has(row.similarity_outcome) || !dispositions.has(row.disposition) ||
                     !validText(row.grooming_finding) || !validText(row.recommended_next_step) ||
                     !statuses.has(row.assessment_status)) {
@@ -114,6 +120,15 @@ safe-outputs:
                 if ((row.disposition === "Possible duplicate") && !["Match", "Similar"].includes(row.similarity_outcome)) {
                   core.setFailed("Possible duplicate requires a Match or Similar outcome");
                   return;
+                }
+                if (row.disposition === "Superseded") {
+                  const original = row.lineage_evidence.original_delivery;
+                  const replacement = row.lineage_evidence.replacement_or_removal;
+                  if (original.length === 0 || replacement.length === 0 ||
+                      !replacement.some((item) => !original.includes(item))) {
+                    core.setFailed("Superseded requires distinct original-delivery and replacement-or-removal evidence");
+                    return;
+                  }
                 }
                 issueNumbers.add(row.issue);
               }
@@ -138,7 +153,12 @@ safe-outputs:
                 reportLines.push("| - | No issues assessed | - | - | - | - | - | - | No maintainer action | None | Assessed |");
               } else {
                 for (const row of payload.issues) {
-                  reportLines.push(`| #${row.issue} | ${escapeCell(row.title)} | ${escapeCell(row.selection_reason)} | ${escapeCell(row.activity_and_ownership_context)} | ${escapeCell(row.acceptance_signals)} | ${row.repository_evidence.map(escapeCell).join("<br>")} | ${row.similarity_outcome} | ${row.disposition} | ${escapeCell(row.grooming_finding)} | ${escapeCell(row.recommended_next_step)} | ${row.assessment_status} |`);
+                  const evidence = [
+                    ...row.repository_evidence,
+                    ...row.lineage_evidence.original_delivery.map((item) => `Original delivery: ${item}`),
+                    ...row.lineage_evidence.replacement_or_removal.map((item) => `Replacement or removal: ${item}`),
+                  ];
+                  reportLines.push(`| #${row.issue} | ${escapeCell(row.title)} | ${escapeCell(row.selection_reason)} | ${escapeCell(row.activity_and_ownership_context)} | ${escapeCell(row.acceptance_signals)} | ${evidence.map(escapeCell).join("<br>")} | ${row.similarity_outcome} | ${row.disposition} | ${escapeCell(row.grooming_finding)} | ${escapeCell(row.recommended_next_step)} | ${row.assessment_status} |`);
                 }
               }
               const report = reportLines.join("\n");
