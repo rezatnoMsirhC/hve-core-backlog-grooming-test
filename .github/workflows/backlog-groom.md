@@ -75,7 +75,7 @@ safe-outputs:
 
               let payload;
               try {
-                payload = JSON.parse(String(requests[0].report_data ?? ""));
+                payload = JSON.parse(String(requests[0]["report-data"] ?? ""));
               } catch {
                 core.setFailed("Report data is not valid JSON");
                 return;
