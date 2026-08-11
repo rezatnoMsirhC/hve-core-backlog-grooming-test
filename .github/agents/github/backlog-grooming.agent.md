@@ -132,10 +132,47 @@ characters, and insert a zero-width space after `@` in mention-like text. These
 same transformations are enforced independently by the tracker publisher.
 
 For tracker publication, encode the same report as JSON with exactly `run` and
-`issues`. Use snake_case forms of the canonical column names. Each issue object
-includes `acceptance_signals` and a non-empty `repository_evidence` array of
-stable paths, issue or pull-request numbers, commit identifiers, release
-identifiers, or recorded negative-search scopes. Do not interpolate issue text
-into JSON keys or omit a selected issue. Preserve raw text values in JSON; apply
-cell escaping only to the model-facing Markdown. The publisher independently
-escapes raw JSON values when rendering its Markdown.
+`issues` and use this exact schema:
+
+```json
+{
+  "run": {
+    "timestamp": "RFC 3339 timestamp",
+    "total_open_inventory": 0,
+    "assessed": 0,
+    "priority_cohort": 0,
+    "round_robin_cohort": 0,
+    "deferred": 0,
+    "stop_reason": "non-empty text",
+    "next_cursor": 0
+  },
+  "issues": [
+    {
+      "issue": 1,
+      "title": "raw issue title",
+      "selection_reason": "non-empty text",
+      "activity_and_ownership_context": "non-empty text",
+      "acceptance_signals": "non-empty text",
+      "repository_evidence": ["stable evidence identifier"],
+      "similarity_outcome": "Distinct",
+      "disposition": "Still needed",
+      "grooming_finding": "non-empty text",
+      "recommended_next_step": "non-empty text",
+      "assessment_status": "Assessed"
+    }
+  ]
+}
+```
+
+Use integers without `#` or prose for `issue`, `next_cursor`, and every count.
+Use exactly `Match`, `Similar`, `Distinct`, or `Uncertain` for
+`similarity_outcome`; put compared issue numbers in the finding rather than the
+enum value. Use exactly `Still needed`, `Likely completed`, `Superseded`,
+`Possible duplicate`, `Needs correction`, or `Uncertain` for `disposition`.
+Use exactly `Assessed` or `Deferred` for `assessment_status`. Each issue object
+includes a non-empty `repository_evidence` array of stable paths, issue or
+pull-request numbers, commit identifiers, release identifiers, or recorded
+negative-search scopes. Do not rename, add, or omit keys, interpolate issue
+text into keys, or omit a selected issue. Preserve raw text values in JSON;
+apply cell escaping only to the model-facing Markdown. The publisher
+independently escapes raw JSON values when rendering its Markdown.
