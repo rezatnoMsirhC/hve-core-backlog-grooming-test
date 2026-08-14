@@ -56,7 +56,7 @@ jobs:
     permissions: {}
     outputs:
       manifest-digest: ${{ steps.manifest.outputs.manifest-digest }}
-      ordered-candidate-ids: ${{ steps.manifest.outputs.ordered-candidate-ids }}
+      shard-matrix: ${{ steps.manifest.outputs.shard-matrix }}
       planned-ai-credits: ${{ steps.manifest.outputs.planned-ai-credits }}
     steps:
       - name: Validate bounds and build manifest
@@ -172,7 +172,7 @@ jobs:
                   "completed_at",
                   "report_data",
                 ],
-                producer: "backlog-groom/agent",
+                producer: "backlog-groom/result-job",
                 terminal_rule: "exactly-one-current-run-result-per-planned-shard",
                 reject: [
                   "missing",
@@ -198,7 +198,7 @@ jobs:
               "utf8",
             );
             core.setOutput("manifest-digest", manifestDigest);
-            core.setOutput("ordered-candidate-ids", JSON.stringify(orderedCandidateIds));
+            core.setOutput("shard-matrix", JSON.stringify(matrix));
             core.setOutput("planned-ai-credits", String(plannedAiCredits));
       - name: Upload immutable proof manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -209,19 +209,215 @@ jobs:
           retention-days: 7
 
   assess:
-    name: Assess shard-01
+    name: Assess ${{ matrix.shard.shard_id }}
     needs: plan
-    if: ${{ needs.plan.outputs.ordered-candidate-ids != '[]' }}
+    if: ${{ needs.plan.outputs.shard-matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max-parallel) }}
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shard-matrix) }}
     uses: ./.github/workflows/backlog-groom.lock.yml
     with:
-      shard_id: shard-01
+      shard_id: ${{ matrix.shard.shard_id }}
       manifest_digest: ${{ needs.plan.outputs.manifest-digest }}
-      ordered_candidate_ids: ${{ needs.plan.outputs.ordered-candidate-ids }}
+      ordered_candidate_ids: ${{ toJSON(matrix.shard.ordered_candidate_ids) }}
       orchestrator_run_id: ${{ github.run_id }}
       orchestrator_attempt: ${{ fromJSON(github.run_attempt) }}
-      worker_timeout_minutes: 20
+      worker_timeout_minutes: ${{ matrix.shard.worker_timeout_minutes }}
     permissions:
       actions: write
       contents: read
       issues: read
     secrets: inherit
+
+  inject:
+    name: Inject authorized artifact conflict
+    needs:
+      - plan
+      - assess
+    if: ${{ inputs.failure-injection != 'none' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Download shard-01 result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: backlog-grooming-proof-${{ github.run_id }}-${{ github.run_attempt }}-shard-01
+          path: injected-result
+      - name: Build injected result
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          FAILURE_INJECTION: ${{ inputs.failure-injection }}
+        with:
+          script: |
+            const crypto = require("crypto");
+            const fs = require("fs");
+
+            const resultPath = "injected-result/shard-result.json";
+            const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+            if (process.env.FAILURE_INJECTION === "conflicting-artifact") {
+              result.report_data.run.stop_reason = "Authorized conflicting artifact injection";
+              const material = {
+                schema_version: result.schema_version,
+                run_id: result.run_id,
+                attempt: result.attempt,
+                shard_id: result.shard_id,
+                manifest_digest: result.manifest_digest,
+                ordered_candidate_ids: result.ordered_candidate_ids,
+                producer: result.producer,
+                started_at: result.started_at,
+                completed_at: result.completed_at,
+                report_data: result.report_data,
+              };
+              const canonicalize = (value) => {
+                if (Array.isArray(value)) {
+                  return `[${value.map(canonicalize).join(",")}]`;
+                }
+                if (value !== null && typeof value === "object") {
+                  return `{${Object.keys(value).sort().map(
+                    (key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`,
+                  ).join(",")}}`;
+                }
+                return JSON.stringify(value);
+              };
+              result.result_digest = crypto
+                .createHash("sha256")
+                .update(canonicalize(material))
+                .digest("hex");
+              fs.writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+            }
+      - name: Upload injected shard result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backlog-grooming-proof-${{ github.run_id }}-${{ github.run_attempt }}-shard-01-injected-${{ inputs.failure-injection }}
+          path: injected-result/shard-result.json
+          if-no-files-found: error
+          retention-days: 7
+
+  validate-results:
+    name: Validate complete proof result set
+    needs:
+      - plan
+      - assess
+      - inject
+    if: ${{ always() && needs.plan.result == 'success' && needs.assess.result == 'success' && (needs.inject.result == 'success' || needs.inject.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Download proof manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: backlog-grooming-proof-${{ github.run_id }}-${{ github.run_attempt }}-manifest
+          path: proof-manifest
+      - name: Download shard results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: backlog-grooming-proof-${{ github.run_id }}-${{ github.run_attempt }}-shard-*
+          path: proof-results
+      - name: Require one current result per planned shard
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const crypto = require("crypto");
+            const fs = require("fs");
+            const path = require("path");
+
+            const manifest = JSON.parse(fs.readFileSync("proof-manifest/manifest.json", "utf8"));
+            const requiredFields = manifest.result_contract.required_fields;
+            const expectedShards = new Map(manifest.shards.map(
+              (shard) => [shard.shard_id, shard.ordered_candidate_ids],
+            ));
+            const resultPaths = [];
+            const collectResults = (directory) => {
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                const entryPath = path.join(directory, entry.name);
+                if (entry.isDirectory()) {
+                  collectResults(entryPath);
+                } else if (entry.name === "shard-result.json") {
+                  resultPaths.push(entryPath);
+                }
+              }
+            };
+            collectResults("proof-results");
+
+            const canonicalize = (value) => {
+              if (Array.isArray(value)) {
+                return `[${value.map(canonicalize).join(",")}]`;
+              }
+              if (value !== null && typeof value === "object") {
+                return `{${Object.keys(value).sort().map(
+                  (key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`,
+                ).join(",")}}`;
+              }
+              return JSON.stringify(value);
+            };
+            const errors = [];
+            const resultsByShard = new Map();
+            for (const resultPath of resultPaths) {
+              let result;
+              try {
+                result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+              } catch (error) {
+                errors.push(`${resultPath}: malformed JSON: ${error.message}`);
+                continue;
+              }
+              const missingFields = requiredFields.filter((field) => !(field in result));
+              if (missingFields.length > 0) {
+                errors.push(`${resultPath}: missing fields ${missingFields.join(", ")}`);
+                continue;
+              }
+              if (!expectedShards.has(result.shard_id)) {
+                errors.push(`${resultPath}: unexpected shard ${result.shard_id}`);
+                continue;
+              }
+              if (result.schema_version !== manifest.result_contract.schema_version) {
+                errors.push(`${resultPath}: result schema mismatch`);
+              }
+              if (result.producer !== manifest.result_contract.producer) {
+                errors.push(`${resultPath}: producer mismatch`);
+              }
+              if (result.run_id !== String(context.runId) || result.attempt !== Number(process.env.GITHUB_RUN_ATTEMPT)) {
+                errors.push(`${resultPath}: stale run identity`);
+              }
+              if (result.manifest_digest !== manifest.manifest_digest) {
+                errors.push(`${resultPath}: manifest digest mismatch`);
+              }
+              if (JSON.stringify(result.ordered_candidate_ids) !== JSON.stringify(expectedShards.get(result.shard_id))) {
+                errors.push(`${resultPath}: shard candidate mismatch`);
+              }
+              const material = {
+                schema_version: result.schema_version,
+                run_id: result.run_id,
+                attempt: result.attempt,
+                shard_id: result.shard_id,
+                manifest_digest: result.manifest_digest,
+                ordered_candidate_ids: result.ordered_candidate_ids,
+                producer: result.producer,
+                started_at: result.started_at,
+                completed_at: result.completed_at,
+                report_data: result.report_data,
+              };
+              const computedDigest = crypto
+                .createHash("sha256")
+                .update(canonicalize(material))
+                .digest("hex");
+              if (computedDigest !== result.result_digest) {
+                errors.push(`${resultPath}: result digest mismatch`);
+              }
+              const shardResults = resultsByShard.get(result.shard_id) ?? [];
+              shardResults.push(result);
+              resultsByShard.set(result.shard_id, shardResults);
+            }
+            for (const shardId of expectedShards.keys()) {
+              const shardResults = resultsByShard.get(shardId) ?? [];
+              if (shardResults.length !== 1) {
+                errors.push(`${shardId}: expected exactly one result, found ${shardResults.length}`);
+              }
+            }
+            if (errors.length > 0) {
+              throw new Error(`Proof result validation failed:\n${errors.join("\n")}`);
+            }
+            core.info(`Accepted ${resultPaths.length} result artifacts for ${expectedShards.size} planned shards`);
