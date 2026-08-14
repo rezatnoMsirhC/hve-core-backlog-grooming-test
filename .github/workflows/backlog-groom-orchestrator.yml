@@ -1,0 +1,216 @@
+name: Backlog Grooming Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate-ids:
+        description: 'JSON array of positive issue numbers for the non-mutating proof'
+        required: true
+        type: string
+        default: '[]'
+      shard-count:
+        description: 'Requested proof shards (1-4)'
+        required: true
+        type: number
+        default: 1
+      shard-width:
+        description: 'Maximum candidates assigned to one shard (1-10)'
+        required: true
+        type: number
+        default: 1
+      max-parallel:
+        description: 'Maximum concurrent proof workers (1-4)'
+        required: true
+        type: number
+        default: 1
+      aggregate-ai-credit-cap:
+        description: 'Maximum planned AI Credits across 1000-AIC proof workers (1000-4000)'
+        required: true
+        type: number
+        default: 1000
+      failure-injection:
+        description: 'Failure mode authorized for this proof dispatch'
+        required: true
+        type: choice
+        default: none
+        options:
+          - none
+          - duplicate-artifact
+          - conflicting-artifact
+
+concurrency:
+  group: backlog-grooming-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  plan:
+    name: Validate proof contract
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      manifest-digest: ${{ steps.manifest.outputs.manifest-digest }}
+      matrix: ${{ steps.manifest.outputs.matrix }}
+      planned-ai-credits: ${{ steps.manifest.outputs.planned-ai-credits }}
+    steps:
+      - name: Validate bounds and build manifest
+        id: manifest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CANDIDATE_IDS: ${{ inputs.candidate-ids }}
+          SHARD_COUNT: ${{ inputs.shard-count }}
+          SHARD_WIDTH: ${{ inputs.shard-width }}
+          MAX_PARALLEL: ${{ inputs.max-parallel }}
+          AGGREGATE_AI_CREDIT_CAP: ${{ inputs.aggregate-ai-credit-cap }}
+          FAILURE_INJECTION: ${{ inputs.failure-injection }}
+        with:
+          script: |
+            const crypto = require("crypto");
+            const fs = require("fs");
+
+            const parseInteger = (name, value, minimum, maximum) => {
+              const parsed = Number(value);
+              if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+                throw new Error(`${name} must be an integer from ${minimum} through ${maximum}`);
+              }
+              return parsed;
+            };
+
+            const shardCount = parseInteger("shard-count", process.env.SHARD_COUNT, 1, 4);
+            const shardWidth = parseInteger("shard-width", process.env.SHARD_WIDTH, 1, 10);
+            const maxParallel = parseInteger("max-parallel", process.env.MAX_PARALLEL, 1, 4);
+            const perWorkerAiCredits = 1000;
+            const aggregateAiCreditCap = parseInteger(
+              "aggregate-ai-credit-cap",
+              process.env.AGGREGATE_AI_CREDIT_CAP,
+              1000,
+              4000,
+            );
+            if (maxParallel > shardCount) {
+              throw new Error("max-parallel cannot exceed shard-count");
+            }
+            const plannedAiCredits = shardCount * perWorkerAiCredits;
+            if (plannedAiCredits > aggregateAiCreditCap) {
+              throw new Error(
+                `planned AI Credits ${plannedAiCredits} exceed cap ${aggregateAiCreditCap}`,
+              );
+            }
+
+            let candidateIds;
+            try {
+              candidateIds = JSON.parse(process.env.CANDIDATE_IDS);
+            } catch {
+              throw new Error("candidate-ids must be valid JSON");
+            }
+            if (!Array.isArray(candidateIds) || candidateIds.some(
+              (issue) => !Number.isInteger(issue) || issue <= 0,
+            )) {
+              throw new Error("candidate-ids must be a JSON array of positive integers");
+            }
+            const orderedCandidateIds = [...new Set(candidateIds)].sort((left, right) => left - right);
+            if (orderedCandidateIds.length !== candidateIds.length) {
+              throw new Error("candidate-ids must not contain duplicates");
+            }
+            if (orderedCandidateIds.length > shardCount * shardWidth) {
+              throw new Error("candidate-ids exceed the requested shard capacity");
+            }
+
+            const shards = Array.from({ length: shardCount }, (_, index) => ({
+              shard_id: `shard-${String(index + 1).padStart(2, "0")}`,
+              ordered_candidate_ids: [],
+            }));
+            orderedCandidateIds.forEach((issue, index) => {
+              shards[index % shardCount].ordered_candidate_ids.push(issue);
+            });
+            const matrix = shards
+              .filter((shard) => shard.ordered_candidate_ids.length > 0)
+              .map((shard) => ({
+                ...shard,
+                worker_timeout_minutes: 20,
+                per_worker_ai_credits: perWorkerAiCredits,
+              }));
+            const manifest = {
+              schema_version: "backlog-grooming-proof-manifest/v1",
+              run_id: String(context.runId),
+              attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              producer: "backlog-groom-orchestrator/plan",
+              shard_count: shardCount,
+              shard_width: shardWidth,
+              max_parallel: maxParallel,
+              per_worker_ai_credits: perWorkerAiCredits,
+              aggregate_ai_credit_cap: aggregateAiCreditCap,
+              planned_ai_credits: plannedAiCredits,
+              failure_injection: process.env.FAILURE_INJECTION,
+              ordered_candidate_ids: orderedCandidateIds,
+              shards: matrix,
+              result_contract: {
+                schema_version: "backlog-grooming-shard-result/v1",
+                required_fields: [
+                  "schema_version",
+                  "run_id",
+                  "attempt",
+                  "shard_id",
+                  "manifest_digest",
+                  "ordered_candidate_ids",
+                  "result_digest",
+                  "producer",
+                  "started_at",
+                  "completed_at",
+                  "report_data",
+                ],
+                producer: "backlog-groom/agent",
+                terminal_rule: "exactly-one-current-run-result-per-planned-shard",
+                reject: [
+                  "missing",
+                  "malformed",
+                  "stale",
+                  "unexpected",
+                  "duplicate",
+                  "conflicting",
+                  "manifest-mismatched",
+                ],
+              },
+            };
+            const canonicalManifest = JSON.stringify(manifest);
+            const manifestDigest = crypto
+              .createHash("sha256")
+              .update(canonicalManifest)
+              .digest("hex");
+            const envelope = { ...manifest, manifest_digest: manifestDigest };
+            fs.mkdirSync("proof-output", { recursive: true });
+            fs.writeFileSync(
+              "proof-output/manifest.json",
+              `${JSON.stringify(envelope, null, 2)}\n`,
+              "utf8",
+            );
+            core.setOutput("manifest-digest", manifestDigest);
+            core.setOutput("matrix", JSON.stringify({ include: matrix }));
+            core.setOutput("planned-ai-credits", String(plannedAiCredits));
+      - name: Upload immutable proof manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backlog-grooming-proof-${{ github.run_id }}-${{ github.run_attempt }}-manifest
+          path: proof-output/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  assess:
+    name: Assess ${{ matrix.shard_id }}
+    needs: plan
+    if: ${{ fromJSON(needs.plan.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max-parallel }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/backlog-groom.lock.yml
+    with:
+      shard_id: ${{ matrix.shard_id }}
+      manifest_digest: ${{ needs.plan.outputs.manifest-digest }}
+      ordered_candidate_ids: ${{ toJSON(matrix.ordered_candidate_ids) }}
+      orchestrator_run_id: ${{ github.run_id }}
+      orchestrator_attempt: ${{ fromJSON(github.run_attempt) }}
+      worker_timeout_minutes: ${{ matrix.worker_timeout_minutes }}
+    permissions:
+      contents: read
+      issues: read

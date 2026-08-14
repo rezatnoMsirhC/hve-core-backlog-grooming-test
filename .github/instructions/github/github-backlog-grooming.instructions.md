@@ -11,6 +11,28 @@ assessment and the interactive Grooming workflow. Use
 similarity comparison, autonomy, and state persistence. Use
 `github-backlog-update.instructions.md` for approved operation execution.
 
+## Automated Shard Overlay
+
+When an automated workflow supplies an explicit ordered candidate-ID array and
+a manifest digest, the workflow is a read-only assessment worker. In this mode:
+
+* The orchestrator owns complete inventory retrieval, priority selection,
+   continuation state, shard membership, and publication eligibility.
+* The worker validates and assesses only the supplied open non-pull-request
+   issues in the supplied order. It does not repeat cohort selection or resolve
+   tracker state.
+* The worker calls only the workflow's shard-result safe output. The isolated
+   result job validates the report, binds caller provenance, computes the digest,
+   and uploads one immutable artifact without issue-write permission.
+* The worker does not create, update, reopen, or comment on a tracker. A later
+   deterministic aggregator and sole publisher own those operations only after
+   complete fan-in validation.
+
+This overlay governs automated shard execution when its inputs are present. The
+inventory, continuation, report, tracker, and interactive handoff sections below
+continue to govern orchestration, aggregation, publication, and interactive
+grooming as applicable.
+
 ## Outcome
 
 Every open non-pull-request issue except the workflow-owned marker-bearing
@@ -49,10 +71,11 @@ Select the run cohort in this order:
    report publication.
 
 Do not impose an age threshold or fixed semantic issue-count limit. Record the
-run's stop reason and the next issue-number cursor. Advance the cursor only
-after a successful run publishes its report state. Under finite backlog growth
-and continued successful runs, every continuously open issue must eventually
-enter an assessment cohort.
+run's stop reason and the next issue-number cursor. Set the cursor to the last
+assessed issue number regardless of cohort, or retain the previous cursor when
+no issue was assessed. Advance the cursor only after a successful run publishes
+its report state. Under finite backlog growth and continued successful runs,
+every continuously open issue must eventually enter an assessment cohort.
 
 ## Grooming Assessment
 
