@@ -208,5 +208,6 @@ jobs:
       orchestrator_attempt: ${{ fromJSON(github.run_attempt) }}
       worker_timeout_minutes: 20
     permissions:
+      actions: write
       contents: read
       issues: read
