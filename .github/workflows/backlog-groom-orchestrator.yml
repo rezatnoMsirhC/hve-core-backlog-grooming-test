@@ -211,3 +211,4 @@ jobs:
       actions: write
       contents: read
       issues: read
+    secrets: inherit
