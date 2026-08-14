@@ -51,7 +51,7 @@ jobs:
     permissions: {}
     outputs:
       manifest-digest: ${{ steps.manifest.outputs.manifest-digest }}
-      matrix: ${{ steps.manifest.outputs.matrix }}
+      ordered-candidate-ids: ${{ steps.manifest.outputs.ordered-candidate-ids }}
       planned-ai-credits: ${{ steps.manifest.outputs.planned-ai-credits }}
     steps:
       - name: Validate bounds and build manifest
@@ -185,7 +185,7 @@ jobs:
               "utf8",
             );
             core.setOutput("manifest-digest", manifestDigest);
-            core.setOutput("matrix", JSON.stringify({ include: matrix }));
+            core.setOutput("ordered-candidate-ids", JSON.stringify(orderedCandidateIds));
             core.setOutput("planned-ai-credits", String(plannedAiCredits));
       - name: Upload immutable proof manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -196,21 +196,17 @@ jobs:
           retention-days: 7
 
   assess:
-    name: Assess ${{ matrix.shard_id }}
+    name: Assess shard-01
     needs: plan
-    if: ${{ fromJSON(needs.plan.outputs.matrix).include[0] != null }}
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ inputs.max-parallel }}
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    if: ${{ needs.plan.outputs.ordered-candidate-ids != '[]' }}
     uses: ./.github/workflows/backlog-groom.lock.yml
     with:
-      shard_id: ${{ matrix.shard_id }}
+      shard_id: shard-01
       manifest_digest: ${{ needs.plan.outputs.manifest-digest }}
-      ordered_candidate_ids: ${{ toJSON(matrix.ordered_candidate_ids) }}
+      ordered_candidate_ids: ${{ needs.plan.outputs.ordered-candidate-ids }}
       orchestrator_run_id: ${{ github.run_id }}
       orchestrator_attempt: ${{ fromJSON(github.run_attempt) }}
-      worker_timeout_minutes: ${{ matrix.worker_timeout_minutes }}
+      worker_timeout_minutes: 20
     permissions:
       contents: read
       issues: read
