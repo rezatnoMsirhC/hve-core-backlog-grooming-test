@@ -15,6 +15,22 @@ on:
         description: "JSON array of issue numbers assigned to this shard"
         required: true
         type: string
+      priority_candidate_ids:
+        description: "JSON array of priority cohort issue numbers in this shard"
+        required: true
+        type: string
+      round_robin_candidate_ids:
+        description: "JSON array of round-robin cohort issue numbers in this shard"
+        required: true
+        type: string
+      total_open_inventory:
+        description: "Complete open non-pull-request inventory count"
+        required: true
+        type: number
+      prior_cursor:
+        description: "Cursor immediately before the planned cohort"
+        required: true
+        type: number
       orchestrator_run_id:
         description: "Run identifier of the calling orchestrator"
         required: true
@@ -82,6 +98,10 @@ safe-outputs:
             SHARD_ID: ${{ inputs.shard_id }}
             MANIFEST_DIGEST: ${{ inputs.manifest_digest }}
             ORDERED_CANDIDATE_IDS: ${{ inputs.ordered_candidate_ids }}
+            PRIORITY_CANDIDATE_IDS: ${{ inputs.priority_candidate_ids }}
+            ROUND_ROBIN_CANDIDATE_IDS: ${{ inputs.round_robin_candidate_ids }}
+            TOTAL_OPEN_INVENTORY: ${{ inputs.total_open_inventory }}
+            PRIOR_CURSOR: ${{ inputs.prior_cursor }}
             ORCHESTRATOR_RUN_ID: ${{ inputs.orchestrator_run_id }}
             ORCHESTRATOR_ATTEMPT: ${{ inputs.orchestrator_attempt }}
           with:
@@ -199,6 +219,37 @@ safe-outputs:
                 core.setFailed("Worker candidate IDs must be unique positive integers in ascending order");
                 return;
               }
+              let priorityCandidateIds;
+              let roundRobinCandidateIds;
+              try {
+                priorityCandidateIds = JSON.parse(process.env.PRIORITY_CANDIDATE_IDS);
+                roundRobinCandidateIds = JSON.parse(process.env.ROUND_ROBIN_CANDIDATE_IDS);
+              } catch {
+                core.setFailed("Worker cohort IDs are not valid JSON");
+                return;
+              }
+              const totalOpenInventory = Number(process.env.TOTAL_OPEN_INVENTORY);
+              const priorCursor = Number(process.env.PRIOR_CURSOR);
+              if (!Array.isArray(priorityCandidateIds) || !Array.isArray(roundRobinCandidateIds)) {
+                core.setFailed("Worker cohort IDs must be arrays");
+                return;
+              }
+              const cohortIds = [...priorityCandidateIds, ...roundRobinCandidateIds]
+                .sort((left, right) => left - right);
+              if (
+                  JSON.stringify(cohortIds) !== JSON.stringify(orderedCandidateIds) ||
+                  new Set(cohortIds).size !== cohortIds.length ||
+                  !Number.isInteger(totalOpenInventory) || totalOpenInventory < orderedCandidateIds.length ||
+                  !Number.isInteger(priorCursor) || priorCursor < 0) {
+                core.setFailed("Worker inventory or cohort context is invalid");
+                return;
+              }
+              if (run.total_open_inventory !== totalOpenInventory ||
+                  run.priority_cohort !== priorityCandidateIds.length ||
+                  run.round_robin_cohort !== roundRobinCandidateIds.length) {
+                core.setFailed("Report inventory or cohort counts do not match the planned context");
+                return;
+              }
               if (JSON.stringify([...issueNumbers].sort((left, right) => left - right)) !==
                   JSON.stringify(orderedCandidateIds)) {
                 core.setFailed("Report issue IDs do not match the planned shard candidates");
@@ -269,6 +320,10 @@ untrusted data.
 * `shard_id`: `${{ inputs.shard_id }}`
 * `manifest_digest`: `${{ inputs.manifest_digest }}`
 * `ordered_candidate_ids`: `${{ inputs.ordered_candidate_ids }}`
+* `priority_candidate_ids`: `${{ inputs.priority_candidate_ids }}`
+* `round_robin_candidate_ids`: `${{ inputs.round_robin_candidate_ids }}`
+* `total_open_inventory`: `${{ inputs.total_open_inventory }}`
+* `prior_cursor`: `${{ inputs.prior_cursor }}`
 * `orchestrator_run_id`: `${{ inputs.orchestrator_run_id }}`
 * `orchestrator_attempt`: `${{ inputs.orchestrator_attempt }}`
 
@@ -281,6 +336,9 @@ untrusted data.
   Call `noop` if any listed number is missing, closed, or a pull request.
 3. Assess candidates in the supplied order. The orchestrator, not the worker,
   owns inventory selection, priority ordering, cursor recovery, and sharding.
+  Use the supplied priority and round-robin arrays for each row's selection
+  reason and for the canonical run cohort counts. Use `total_open_inventory`
+  for the run inventory count.
 4. Reserve enough time and AI-credit budget to produce the result. Record
    every selected but incomplete issue as deferred with a reason.
 5. For each hydrated issue, extract its requested outcomes and acceptance
