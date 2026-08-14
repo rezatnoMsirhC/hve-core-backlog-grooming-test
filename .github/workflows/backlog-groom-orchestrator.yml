@@ -8,6 +8,11 @@ on:
         required: true
         type: string
         default: '[]'
+      prior-cursor:
+        description: 'Cursor value immediately before the planned cohort'
+        required: true
+        type: number
+        default: 0
       shard-count:
         description: 'Requested proof shards (1-4)'
         required: true
@@ -59,6 +64,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           CANDIDATE_IDS: ${{ inputs.candidate-ids }}
+          PRIOR_CURSOR: ${{ inputs.prior-cursor }}
           SHARD_COUNT: ${{ inputs.shard-count }}
           SHARD_WIDTH: ${{ inputs.shard-width }}
           MAX_PARALLEL: ${{ inputs.max-parallel }}
@@ -112,6 +118,12 @@ jobs:
             if (orderedCandidateIds.length !== candidateIds.length) {
               throw new Error("candidate-ids must not contain duplicates");
             }
+            const priorCursor = parseInteger(
+              "prior-cursor",
+              process.env.PRIOR_CURSOR,
+              0,
+              Number.MAX_SAFE_INTEGER,
+            );
             if (orderedCandidateIds.length > shardCount * shardWidth) {
               throw new Error("candidate-ids exceed the requested shard capacity");
             }
@@ -142,6 +154,7 @@ jobs:
               aggregate_ai_credit_cap: aggregateAiCreditCap,
               planned_ai_credits: plannedAiCredits,
               failure_injection: process.env.FAILURE_INJECTION,
+              prior_cursor: priorCursor,
               ordered_candidate_ids: orderedCandidateIds,
               shards: matrix,
               result_contract: {
