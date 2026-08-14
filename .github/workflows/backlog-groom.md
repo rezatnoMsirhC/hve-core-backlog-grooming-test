@@ -34,6 +34,7 @@ timeout-minutes: ${{ inputs.worker_timeout_minutes || 20 }}
 max-ai-credits: 1000
 
 concurrency:
+  group: gh-aw-backlog-groom-${{ inputs.shard_id || github.run_id }}
   job-discriminator: ${{ inputs.shard_id || github.run_id }}
 
 imports:
