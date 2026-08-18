@@ -509,7 +509,10 @@ jobs:
               const cursorIds = [];
               const seen = new Set();
               for (const issue of [...priority, ...roundRobin]) {
-                if (seen.add(issue.number)) cursorIds.push(issue.number);
+                if (!seen.has(issue.number)) {
+                  seen.add(issue.number);
+                  cursorIds.push(issue.number);
+                }
               }
               const shardCount = Number(process.env.SWEEP_SHARD_COUNT);
               const shardWidth = Number(process.env.SWEEP_SHARD_WIDTH);
