@@ -286,7 +286,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
+      contents: read
     steps:
+      - name: Check out the proof helper implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Dispatch proof recovery
         if: ${{ needs.wave.outputs.dispatch-kind == 'recovery' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -348,7 +353,7 @@ jobs:
             material.dispatch_digest = crypto.createHash("sha256").update(canonicalize(material)).digest("hex");
             fs.mkdirSync("proof-dispatch", { recursive: true });
             fs.writeFileSync("proof-dispatch/dispatch-record.json", `${JSON.stringify(material, null, 2)}\n`);
-      - name: Dispatch duplicate identity then exact successor
+      - name: Dispatch duplicate wave identity
         if: ${{ needs.wave.outputs.dispatch-kind == 'ordinary' && inputs.scenario == 'duplicate-dispatch' && needs.wave.outputs.wave-number == '2' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -359,9 +364,58 @@ jobs:
           PRIOR_CHECKPOINT_RUN_ID: ${{ needs.wave.outputs.prior-checkpoint-run-id }}
           PRIOR_CHECKPOINT_ARTIFACT_ID: ${{ needs.wave.outputs.prior-checkpoint-artifact-id }}
           PRIOR_CHECKPOINT_DIGEST: ${{ needs.wave.outputs.prior-checkpoint-digest }}
+          SOURCE_REF_NAME: ${{ needs.wave.outputs.source-ref-name }}
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo,
+              workflow_id: "backlog-groom-multi-wave-proof.yml",
+              ref: process.env.SOURCE_REF_NAME,
+              inputs: {
+                "scenario": "duplicate-dispatch",
+                "protocol-version": "backlog-grooming-multi-wave-proof/v1",
+                "continuation-mode": "ordinary",
+                "proof-id": process.env.PROOF_ID,
+                "wave-number": "2",
+                "snapshot-run-id": process.env.SNAPSHOT_RUN_ID,
+                "snapshot-artifact-id": process.env.SNAPSHOT_ARTIFACT_ID,
+                "snapshot-digest": process.env.SNAPSHOT_DIGEST,
+                "checkpoint-run-id": process.env.PRIOR_CHECKPOINT_RUN_ID,
+                "checkpoint-artifact-id": process.env.PRIOR_CHECKPOINT_ARTIFACT_ID,
+                "checkpoint-digest": process.env.PRIOR_CHECKPOINT_DIGEST,
+              },
+            });
+      - name: Wait for authenticated duplicate no-op evidence
+        id: duplicate-noop-evidence
+        if: ${{ needs.wave.outputs.dispatch-kind == 'ordinary' && inputs.scenario == 'duplicate-dispatch' && needs.wave.outputs.wave-number == '2' }}
+        uses: ./.github/actions/backlog-groom-multi-wave-proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          command: wait-duplicate-noop
+          scenario: duplicate-dispatch
+          proof-id: ${{ needs.wave.outputs.proof-id }}
+          wave-number: 2
+          checkpoint-run-id: ${{ needs.wave.outputs.checkpoint-run-id }}
+          checkpoint-artifact-id: ${{ needs.wave.outputs.checkpoint-artifact-id }}
+          checkpoint-digest: ${{ needs.wave.outputs.checkpoint-digest }}
+          prior-checkpoint-digest: ${{ needs.wave.outputs.prior-checkpoint-digest }}
+      - name: Dispatch exact successor after authenticated duplicate no-op
+        if: ${{ steps.duplicate-noop-evidence.outcome == 'success' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PROOF_ID: ${{ needs.wave.outputs.proof-id }}
+          SNAPSHOT_RUN_ID: ${{ needs.wave.outputs.snapshot-run-id }}
+          SNAPSHOT_ARTIFACT_ID: ${{ needs.wave.outputs.snapshot-artifact-id }}
+          SNAPSHOT_DIGEST: ${{ needs.wave.outputs.snapshot-digest }}
+          PRIOR_CHECKPOINT_DIGEST: ${{ needs.wave.outputs.prior-checkpoint-digest }}
           CHECKPOINT_RUN_ID: ${{ needs.wave.outputs.checkpoint-run-id }}
           CHECKPOINT_ARTIFACT_ID: ${{ needs.wave.outputs.checkpoint-artifact-id }}
           CHECKPOINT_DIGEST: ${{ needs.wave.outputs.checkpoint-digest }}
+          NOOP_ARTIFACT_ID: ${{ steps.duplicate-noop-evidence.outputs.duplicate-noop-artifact-id }}
+          NOOP_ARTIFACT_DIGEST: ${{ steps.duplicate-noop-evidence.outputs.duplicate-noop-artifact-digest }}
+          NOOP_RUN_ID: ${{ steps.duplicate-noop-evidence.outputs.duplicate-noop-run-id }}
+          NOOP_DIGEST: ${{ steps.duplicate-noop-evidence.outputs.duplicate-noop-digest }}
           SOURCE_REF_NAME: ${{ needs.wave.outputs.source-ref-name }}
         with:
           script: |
@@ -374,61 +428,39 @@ jobs:
               ).join(",")}}`;
               return JSON.stringify(value);
             };
-            const dispatch = async (waveNumber, mode, checkpoint) => github.rest.actions.createWorkflowDispatch({
+            const accepted = {
+              runId: process.env.CHECKPOINT_RUN_ID,
+              artifactId: process.env.CHECKPOINT_ARTIFACT_ID,
+              digest: process.env.CHECKPOINT_DIGEST,
+            };
+            await github.rest.actions.createWorkflowDispatch({
               ...context.repo,
               workflow_id: "backlog-groom-multi-wave-proof.yml",
               ref: process.env.SOURCE_REF_NAME,
               inputs: {
                 "scenario": "duplicate-dispatch",
                 "protocol-version": "backlog-grooming-multi-wave-proof/v1",
-                "continuation-mode": mode,
+                "continuation-mode": "ordinary",
                 "proof-id": process.env.PROOF_ID,
-                "wave-number": String(waveNumber),
+                "wave-number": "3",
                 "snapshot-run-id": process.env.SNAPSHOT_RUN_ID,
                 "snapshot-artifact-id": process.env.SNAPSHOT_ARTIFACT_ID,
                 "snapshot-digest": process.env.SNAPSHOT_DIGEST,
-                "checkpoint-run-id": checkpoint.runId,
-                "checkpoint-artifact-id": checkpoint.artifactId,
-                "checkpoint-digest": checkpoint.digest,
+                "checkpoint-run-id": accepted.runId,
+                "checkpoint-artifact-id": accepted.artifactId,
+                "checkpoint-digest": accepted.digest,
               },
             });
-            const predecessor = {
-              runId: process.env.PRIOR_CHECKPOINT_RUN_ID,
-              artifactId: process.env.PRIOR_CHECKPOINT_ARTIFACT_ID,
-              digest: process.env.PRIOR_CHECKPOINT_DIGEST,
-            };
-            await dispatch(2, "ordinary", predecessor);
-            const noopPrefix = `backlog-groom-multi-wave-proof-${process.env.PROOF_ID}-duplicate-noop-2-`;
-            let noop = null;
-            for (let attempt = 0; attempt < 60; attempt += 1) {
-              const { data } = await github.rest.actions.listArtifactsForRepo({ ...context.repo, per_page: 100, page: 1 });
-              noop = data.artifacts.find((artifact) => !artifact.expired && artifact.name.startsWith(noopPrefix));
-              if (noop) break;
-              await new Promise((resolve) => setTimeout(resolve, 5000));
-            }
-            if (!noop) throw new Error("Duplicate proof run did not emit a bounded no-op artifact before successor dispatch");
-            const { data: noopRun } = await github.rest.actions.getWorkflowRun({
-              ...context.repo,
-              run_id: noop.workflow_run.id,
-            });
-            if (noopRun.path !== ".github/workflows/backlog-groom-multi-wave-proof.yml" ||
-                noopRun.head_sha !== process.env.GITHUB_SHA) {
-              throw new Error("Duplicate no-op artifact producer authentication failed");
-            }
-            const accepted = {
-              runId: process.env.CHECKPOINT_RUN_ID,
-              artifactId: process.env.CHECKPOINT_ARTIFACT_ID,
-              digest: process.env.CHECKPOINT_DIGEST,
-            };
-            await dispatch(3, "ordinary", accepted);
             const requests = [
               {
                 kind: "duplicate",
                 wave_number: 2,
                 continuation_mode: "ordinary",
-                predecessor_checkpoint_digest: predecessor.digest,
-                observed_noop_artifact_id: String(noop.id),
-                observed_noop_run_id: String(noop.workflow_run.id),
+                predecessor_checkpoint_digest: process.env.PRIOR_CHECKPOINT_DIGEST,
+                observed_noop_artifact_id: process.env.NOOP_ARTIFACT_ID,
+                observed_noop_artifact_digest: process.env.NOOP_ARTIFACT_DIGEST,
+                observed_noop_run_id: process.env.NOOP_RUN_ID,
+                observed_noop_digest: process.env.NOOP_DIGEST,
               },
               {
                 kind: "ordinary",

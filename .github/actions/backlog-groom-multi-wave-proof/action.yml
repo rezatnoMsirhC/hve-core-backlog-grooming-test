@@ -139,6 +139,18 @@ outputs:
   final-digest:
     description: Terminal proof evidence digest
     value: ${{ steps.proof.outputs.final-digest }}
+  duplicate-noop-artifact-id:
+    description: Authenticated duplicate no-op artifact ID
+    value: ${{ steps.proof.outputs.duplicate-noop-artifact-id }}
+  duplicate-noop-artifact-digest:
+    description: Authenticated duplicate no-op artifact digest
+    value: ${{ steps.proof.outputs.duplicate-noop-artifact-digest }}
+  duplicate-noop-run-id:
+    description: Authenticated duplicate no-op producer run ID
+    value: ${{ steps.proof.outputs.duplicate-noop-run-id }}
+  duplicate-noop-digest:
+    description: Authenticated duplicate no-op content digest
+    value: ${{ steps.proof.outputs.duplicate-noop-digest }}
 
 runs:
   using: composite

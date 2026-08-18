@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
@@ -7,7 +8,15 @@ const WORKFLOW_PATH = ".github/workflows/backlog-groom-multi-wave-proof.yml";
 const PROTOCOL_VERSION = "backlog-grooming-multi-wave-proof/v1";
 const ARTIFACT_PREFIX = "backlog-groom-multi-wave-proof";
 const DISCOVERY_RUN_LIMIT = 100;
+const DISCOVERY_WAIT_ATTEMPTS = 60;
 const PROOF_ROOT = "proof-work";
+const AUTHORIZED_CONFLICT_STOP_REASON = "Synthetic conflicting second shard result injection";
+const ORIGINAL_STOP_REASON = "Synthetic proof fixture; zero model execution";
+const REJECTION_REASON = Object.freeze({
+  code: "AUTHENTICATED_CONFLICTING_SHARD_RESULT",
+  message: "The production validator rejected one authenticated conflicting shard-result pair",
+});
+const VALIDATOR_PATH = path.resolve(__dirname, "../backlog-groom-wave-validator/validate.js");
 
 const canonicalize = (value) => {
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
@@ -19,6 +28,8 @@ const canonicalize = (value) => {
   return JSON.stringify(value);
 };
 const digest = (value) => crypto.createHash("sha256").update(canonicalize(value)).digest("hex");
+const exactKeys = (value, keys) => value && typeof value === "object" &&
+  !Array.isArray(value) && Object.keys(value).sort().join("|") === [...keys].sort().join("|");
 const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, "utf8"));
 const writeJson = (filePath, value) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -51,6 +62,186 @@ const withoutDigest = (value, field) => {
 const assertRecordedDigest = (name, value, field) => {
   assertDigest(`${name} ${field}`, value[field]);
   if (digest(withoutDigest(value, field)) !== value[field]) throw new Error(`${name} digest mismatch`);
+};
+
+const validateDiscoveredRuns = (runs, sourceSha) => {
+  if (!Array.isArray(runs) || runs.length >= DISCOVERY_RUN_LIMIT) {
+    throw new Error("Proof workflow run discovery reached its finite source-SHA limit");
+  }
+  for (const run of runs) {
+    if (run.path !== WORKFLOW_PATH || run.head_sha !== sourceSha) {
+      throw new Error("Proof workflow run discovery returned an unexpected producer");
+    }
+  }
+  return runs;
+};
+
+const validateDuplicateNoop = (noop, expected) => {
+  assertRecordedDigest("duplicate no-op", noop, "noop_digest");
+  const keys = [
+    "schema_version", "proof_id", "scenario", "wave_number", "source_run_id", "source_attempt",
+    "source_sha", "accepted_checkpoint_run_id", "accepted_checkpoint_artifact_id",
+    "accepted_checkpoint_digest", "predecessor_checkpoint_digest", "fixture_created",
+    "validator_invoked", "checkpoint_created", "successor_dispatched", "noop_digest",
+  ];
+  if (!exactKeys(noop, keys) ||
+      noop.schema_version !== "backlog-grooming-multi-wave-proof-duplicate-noop/v1" ||
+      noop.proof_id !== expected.proofId || noop.scenario !== "duplicate-dispatch" ||
+      noop.wave_number !== expected.waveNumber || noop.source_run_id !== expected.sourceRunId ||
+      noop.source_attempt !== expected.sourceAttempt || noop.source_sha !== expected.sourceSha ||
+      noop.accepted_checkpoint_run_id !== expected.acceptedCheckpointRunId ||
+      noop.accepted_checkpoint_artifact_id !== expected.acceptedCheckpointArtifactId ||
+      noop.accepted_checkpoint_digest !== expected.acceptedCheckpointDigest ||
+      noop.predecessor_checkpoint_digest !== expected.predecessorCheckpointDigest ||
+      noop.fixture_created !== false || noop.validator_invoked !== false ||
+      noop.checkpoint_created !== false || noop.successor_dispatched !== false) {
+    throw new Error("Duplicate no-op evidence is not bound to the exact accepted checkpoint transition");
+  }
+  return noop;
+};
+
+const validateInjectedConflictFixture = (manifest, fixtureMetadata, results, expected) => {
+  assertRecordedDigest("injected manifest", manifest, "manifest_digest");
+  assertRecordedDigest("injected fixture metadata", fixtureMetadata, "fixture_digest");
+  const fixtureKeys = [
+    "schema_version", "proof_id", "scenario", "wave_number", "source_run_id", "source_attempt",
+    "source_sha", "manifest_digest", "result_digests", "injected_conflict", "model_execution",
+    "observed_model_use", "fixture_digest",
+  ];
+  if (!exactKeys(fixtureMetadata, fixtureKeys) ||
+      fixtureMetadata.schema_version !== "backlog-grooming-multi-wave-proof-fixtures/v1" ||
+      fixtureMetadata.proof_id !== manifest.sweep_id || fixtureMetadata.proof_id !== expected.proofId ||
+      fixtureMetadata.scenario !== "failed-wave-resume" || fixtureMetadata.wave_number !== 2 ||
+      fixtureMetadata.source_run_id !== manifest.run_id || fixtureMetadata.source_run_id !== expected.runId ||
+      fixtureMetadata.source_attempt !== manifest.attempt || fixtureMetadata.source_attempt !== expected.attempt ||
+      fixtureMetadata.source_sha !== expected.sourceSha ||
+      fixtureMetadata.manifest_digest !== manifest.manifest_digest ||
+      fixtureMetadata.manifest_digest !== expected.manifestDigest ||
+      fixtureMetadata.fixture_digest !== expected.fixtureDigest || fixtureMetadata.injected_conflict !== true ||
+      fixtureMetadata.model_execution !== "none" || fixtureMetadata.observed_model_use !== 0) {
+    throw new Error("Injected fixture metadata is not bound to the exact failed wave manifest");
+  }
+  if (!Array.isArray(manifest.shards) || results.length !== manifest.shards.length + 1) {
+    throw new Error("Injected fixture must contain one result per shard plus one authorized conflict");
+  }
+  const recordedOriginalDigests = [...fixtureMetadata.result_digests].sort();
+  if (recordedOriginalDigests.length !== manifest.shards.length ||
+      new Set(recordedOriginalDigests).size !== recordedOriginalDigests.length) {
+    throw new Error("Injected fixture metadata must identify exactly one original result per shard");
+  }
+  for (const result of results) assertRecordedDigest("injected shard result", result, "result_digest");
+  const originals = results.filter((result) => recordedOriginalDigests.includes(result.result_digest));
+  const conflicts = results.filter((result) => !recordedOriginalDigests.includes(result.result_digest));
+  if (originals.length !== manifest.shards.length || conflicts.length !== 1 ||
+      JSON.stringify(originals.map((result) => result.result_digest).sort()) !==
+        JSON.stringify(recordedOriginalDigests)) {
+    throw new Error("Injected fixture does not contain the exact recorded original result set");
+  }
+  for (const shard of manifest.shards) {
+    const matches = originals.filter((result) => result.shard_id === shard.shard_id);
+    if (matches.length !== 1 || matches[0].run_id !== manifest.run_id || matches[0].attempt !== manifest.attempt ||
+        matches[0].manifest_digest !== manifest.manifest_digest ||
+        JSON.stringify(matches[0].ordered_candidate_ids) !== JSON.stringify(shard.ordered_candidate_ids)) {
+      throw new Error("Injected fixture original result identity or candidate set is invalid");
+    }
+  }
+  const conflict = conflicts[0];
+  const original = originals.find((result) => result.shard_id === conflict.shard_id);
+  if (!original || original.report_data?.run?.stop_reason !== ORIGINAL_STOP_REASON) {
+    throw new Error("Injected fixture conflict does not duplicate one expected original shard");
+  }
+  const authorizedConflict = JSON.parse(JSON.stringify(original));
+  authorizedConflict.report_data.run.stop_reason = AUTHORIZED_CONFLICT_STOP_REASON;
+  authorizedConflict.result_digest = digest(withoutDigest(authorizedConflict, "result_digest"));
+  if (canonicalize(conflict) !== canonicalize(authorizedConflict)) {
+    throw new Error("Injected fixture conflict differs outside the authorized stop_reason and result_digest mutation");
+  }
+  return { original, conflict, originals };
+};
+
+const expectedAggregate = (manifest, originals) => {
+  const rowsByIssue = new Map();
+  for (const result of originals) {
+    for (const row of result.report_data.issues) {
+      if (rowsByIssue.has(row.issue)) throw new Error("Control fixture contains duplicate issue rows");
+      rowsByIssue.set(row.issue, row);
+    }
+  }
+  const rows = manifest.ordered_issue_ids.map((issue) => rowsByIssue.get(issue));
+  if (rows.some((row) => !row) || rowsByIssue.size !== manifest.ordered_issue_ids.length) {
+    throw new Error("Control fixture does not exactly cover the manifest issue IDs");
+  }
+  const material = {
+    schema_version: "backlog-grooming-wave-aggregate/v1",
+    sweep_id: manifest.sweep_id,
+    snapshot_digest: manifest.snapshot_digest,
+    wave_number: manifest.wave_number,
+    required_waves: manifest.required_waves,
+    manifest_digest: manifest.manifest_digest,
+    source_run_id: manifest.run_id,
+    source_attempt: manifest.attempt,
+    result_digests: originals.map((result) => result.result_digest).sort(),
+    assessed_issue_ids: rows.filter((row) => row.assessment_status === "Assessed").map((row) => row.issue),
+    deferred_issue_ids: rows.filter((row) => row.assessment_status === "Deferred").map((row) => row.issue),
+    rows,
+  };
+  return withDigest(material, "aggregate_digest");
+};
+
+const validateControlAggregate = (aggregate, manifest, originals) => {
+  assertRecordedDigest("control aggregate", aggregate, "aggregate_digest");
+  const expected = expectedAggregate(manifest, originals);
+  if (canonicalize(aggregate) !== canonicalize(expected)) {
+    throw new Error("Production validator control aggregate digest or exact coverage is invalid");
+  }
+  return aggregate;
+};
+
+const runProductionControl = (manifestPath, manifest, originals, resultsDirectory, aggregateDirectory) => {
+  fs.rmSync(resultsDirectory, { recursive: true, force: true });
+  fs.rmSync(aggregateDirectory, { recursive: true, force: true });
+  for (const result of originals) {
+    writeJson(path.join(resultsDirectory, result.shard_id, "shard-result.json"), result);
+  }
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "backlog-proof-control-"));
+  const githubOutput = path.join(temporaryDirectory, "github-output.txt");
+  try {
+    execFileSync(process.execPath, [VALIDATOR_PATH], {
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: githubOutput,
+        INPUT_MANIFEST_PATH: manifestPath,
+        INPUT_RESULTS_DIRECTORY: resultsDirectory,
+        INPUT_AGGREGATE_DIRECTORY: aggregateDirectory,
+        INPUT_EXPECTED_RUN_ID: manifest.run_id,
+        INPUT_EXPECTED_ATTEMPT: String(manifest.attempt),
+      },
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+    const aggregate = readJson(path.join(aggregateDirectory, "aggregate.json"));
+    validateControlAggregate(aggregate, manifest, originals);
+    const recordedOutput = fs.readFileSync(githubOutput, "utf8");
+    if (!recordedOutput.split(/\r?\n/).includes(`aggregate-digest=${aggregate.aggregate_digest}`)) {
+      throw new Error("Production validator control output did not record the exact aggregate digest");
+    }
+    return aggregate;
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const readFixtureResults = (directory) => {
+  const results = [];
+  const collect = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) collect(entryPath);
+      else if (entry.name === "shard-result.json") results.push(readJson(entryPath));
+    }
+  };
+  collect(directory);
+  return results;
 };
 
 const ghApi = (endpoint) => JSON.parse(execFileSync(
@@ -94,15 +285,9 @@ const listProofArtifacts = (proofId) => {
     `/repos/${process.env.GITHUB_REPOSITORY}/actions/workflows/backlog-groom-multi-wave-proof.yml/runs` +
     `?event=workflow_dispatch&head_sha=${process.env.GITHUB_SHA}&per_page=${DISCOVERY_RUN_LIMIT}`,
   );
-  const runs = response.workflow_runs ?? [];
-  if (runs.length >= DISCOVERY_RUN_LIMIT) {
-    throw new Error("Proof workflow run discovery reached its finite source-SHA limit");
-  }
+  const runs = validateDiscoveredRuns(response.workflow_runs ?? [], process.env.GITHUB_SHA);
   const artifacts = [];
   for (const run of runs) {
-    if (run.path !== WORKFLOW_PATH || run.head_sha !== process.env.GITHUB_SHA) {
-      throw new Error("Proof workflow run discovery returned an unexpected producer");
-    }
     const runArtifacts = ghApi(
       `/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${integer("discovered run ID", run.id)}/artifacts?per_page=100`,
     );
@@ -377,7 +562,7 @@ const prepare = () => {
   ));
   if (continuationMode === "injection") {
     const conflict = JSON.parse(JSON.stringify(results[0]));
-    conflict.report_data.run.stop_reason = "Synthetic conflicting second shard result injection";
+    conflict.report_data.run.stop_reason = AUTHORIZED_CONFLICT_STOP_REASON;
     conflict.result_digest = digest(withoutDigest(conflict, "result_digest"));
     writeJson(`${PROOF_ROOT}/results/conflict/shard-result.json`, conflict);
   }
@@ -415,10 +600,36 @@ const prepare = () => {
 const checkValidation = () => {
   const mode = input("PROOF_MODE");
   const outcome = input("PROOF_VALIDATION_OUTCOME");
-  const aggregateExists = fs.existsSync(`${PROOF_ROOT}/aggregate/aggregate.json`);
+  const aggregateExists = fs.existsSync(`${PROOF_ROOT}/aggregate`);
   if (mode === "injection") {
     if (outcome !== "failure" || aggregateExists) {
       throw new Error("Injected conflict did not fail closed before aggregate creation");
+    }
+    const manifestPath = `${PROOF_ROOT}/manifest/manifest.json`;
+    const manifest = readJson(manifestPath);
+    const fixtureMetadata = readJson(`${PROOF_ROOT}/results/fixture-metadata.json`);
+    const authenticated = validateInjectedConflictFixture(
+      manifest,
+      fixtureMetadata,
+      readFixtureResults(`${PROOF_ROOT}/results`),
+      {
+        proofId: input("PROOF_ID"),
+        runId: String(process.env.GITHUB_RUN_ID),
+        attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+        sourceSha: process.env.GITHUB_SHA,
+        manifestDigest: input("PROOF_MANIFEST_DIGEST"),
+        fixtureDigest: input("PROOF_FIXTURE_DIGEST"),
+      },
+    );
+    const controlAggregate = runProductionControl(
+      manifestPath,
+      manifest,
+      authenticated.originals,
+      `${PROOF_ROOT}/control-results`,
+      `${PROOF_ROOT}/control-aggregate`,
+    );
+    if (fs.existsSync(`${PROOF_ROOT}/aggregate`)) {
+      throw new Error("Injected validator aggregate directory appeared during baseline control validation");
     }
     const material = {
       schema_version: "backlog-grooming-multi-wave-proof-rejection/v1",
@@ -433,8 +644,14 @@ const checkValidation = () => {
       fixture_artifact_id: input("PROOF_FIXTURE_ARTIFACT_ID"),
       fixture_digest: input("PROOF_FIXTURE_DIGEST"),
       prior_checkpoint_digest: input("PROOF_PRIOR_CHECKPOINT_DIGEST"),
-      validator: ".github/actions/backlog-groom-wave-validator",
+      validator: ".github/actions/backlog-groom-wave-validator/validate.js",
       validation_outcome: "failure",
+      rejection_reason: REJECTION_REASON,
+      baseline_control_accepted: true,
+      injected_conflict_authenticated: true,
+      original_result_digest: authenticated.original.result_digest,
+      conflicting_result_digest: authenticated.conflict.result_digest,
+      control_aggregate_digest: controlAggregate.aggregate_digest,
       aggregate_created: false,
       checkpoint_created: false,
       ordinary_successor_dispatched: false,
@@ -447,6 +664,50 @@ const checkValidation = () => {
     throw new Error("Shared production validator did not accept the exact synthetic wave fixture set");
   }
   output("dispatch-kind", "ordinary");
+};
+
+const waitDuplicateNoop = () => {
+  const proofId = input("PROOF_ID");
+  const waveNumber = integer("wave-number", input("PROOF_WAVE_NUMBER"), 2, 2);
+  let matches = [];
+  for (let attempt = 0; attempt < DISCOVERY_WAIT_ATTEMPTS; attempt += 1) {
+    matches = findArtifacts(
+      listProofArtifacts(proofId),
+      `${ARTIFACT_PREFIX}-${proofId}-duplicate-noop-${waveNumber}-`,
+    );
+    if (matches.length > 1) throw new Error("Multiple duplicate no-op artifacts exist for one proof wave identity");
+    if (matches.length === 1) break;
+    wait(5000);
+  }
+  if (matches.length !== 1) throw new Error("Duplicate proof run did not emit one bounded no-op artifact");
+  const artifact = matches[0];
+  const runId = String(artifact.workflow_run?.id ?? "");
+  const entry = readAuthenticatedArtifact(
+    artifact,
+    `${PROOF_ROOT}/observed-duplicate-noop`,
+    artifactName(proofId, "duplicate-noop", waveNumber, runId),
+    runId,
+    process.env.GITHUB_SHA,
+    "duplicate-noop.json",
+  );
+  validateDuplicateNoop(entry.value, {
+    proofId,
+    waveNumber,
+    sourceRunId: runId,
+    sourceAttempt: Number(entry.metadata.run.run_attempt),
+    sourceSha: process.env.GITHUB_SHA,
+    acceptedCheckpointRunId: input("PROOF_CHECKPOINT_RUN_ID"),
+    acceptedCheckpointArtifactId: input("PROOF_CHECKPOINT_ARTIFACT_ID"),
+    acceptedCheckpointDigest: input("PROOF_CHECKPOINT_DIGEST"),
+    predecessorCheckpointDigest: input("PROOF_PRIOR_CHECKPOINT_DIGEST"),
+  });
+  if (!/^sha256:[a-f0-9]{64}$/.test(entry.metadata.artifact.digest)) {
+    throw new Error("Duplicate no-op artifact digest is unavailable or malformed");
+  }
+  output("duplicate-noop-artifact-id", String(artifact.id));
+  output("duplicate-noop-artifact-digest", entry.metadata.artifact.digest);
+  output("duplicate-noop-run-id", runId);
+  output("duplicate-noop-digest", entry.value.noop_digest);
 };
 
 const checkpoint = () => {
@@ -683,13 +944,26 @@ const finalize = () => {
       noopRunId, snapshot.source_sha, "duplicate-noop.json",
     );
     const noop = noopEntry.value;
-    assertRecordedDigest("duplicate no-op", noop, "noop_digest");
     const waveTwoDispatches = dispatchRecords.filter((record) => record.source_run_id === checkpoints[1].source_run_id);
-    if (noop.wave_number !== 2 || noop.accepted_checkpoint_digest !== checkpoints[1].checkpoint_digest ||
-        noop.fixture_created || noop.validator_invoked || noop.checkpoint_created || noop.successor_dispatched ||
+    validateDuplicateNoop(noop, {
+      proofId,
+      waveNumber: 2,
+      sourceRunId: noopRunId,
+      sourceAttempt: Number(noopEntry.metadata.run.run_attempt),
+      sourceSha: snapshot.source_sha,
+      acceptedCheckpointRunId: checkpoints[1].source_run_id,
+      acceptedCheckpointArtifactId: artifactLedger[1].checkpoint_artifact_id,
+      acceptedCheckpointDigest: checkpoints[1].checkpoint_digest,
+      predecessorCheckpointDigest: checkpoints[0].checkpoint_digest,
+    });
+    if (
         waveTwoDispatches.length !== 1 ||
         waveTwoDispatches[0].requests.filter((request) => request.kind === "duplicate").length !== 1 ||
         waveTwoDispatches[0].requests.filter((request) => request.kind === "ordinary").length !== 1 ||
+        waveTwoDispatches[0].requests[0].observed_noop_artifact_id !== String(noops[0].id) ||
+        waveTwoDispatches[0].requests[0].observed_noop_artifact_digest !== noopEntry.metadata.artifact.digest ||
+        waveTwoDispatches[0].requests[0].observed_noop_run_id !== noopRunId ||
+        waveTwoDispatches[0].requests[0].observed_noop_digest !== noop.noop_digest ||
         checkpoints.some((item) => item.source_run_id === noopRunId)) {
       throw new Error("Duplicate dispatch did not produce exactly one checkpoint, one no-op, and one ordinary successor");
     }
@@ -712,11 +986,74 @@ const finalize = () => {
     );
     const rejection = rejectionEntry.value;
     assertRecordedDigest("rejection", rejection, "rejection_digest");
+    const rejectionManifestArtifact = findExactArtifact(
+      artifacts,
+      artifactName(proofId, "manifest", 2, rejectedRunId),
+    );
+    const rejectionFixtureArtifact = findExactArtifact(
+      artifacts,
+      artifactName(proofId, "fixtures", 2, rejectedRunId),
+    );
+    if (String(rejectionManifestArtifact.id) !== rejection.manifest_artifact_id ||
+        String(rejectionFixtureArtifact.id) !== rejection.fixture_artifact_id) {
+      throw new Error("Rejection evidence does not identify its exact manifest and fixture artifacts");
+    }
+    const rejectionManifestEntry = readAuthenticatedArtifact(
+      rejectionManifestArtifact,
+      `${PROOF_ROOT}/terminal/rejection-manifest`,
+      rejectionManifestArtifact.name,
+      rejectedRunId,
+      snapshot.source_sha,
+      "manifest.json",
+    );
+    const rejectionFixtureEntry = readAuthenticatedArtifact(
+      rejectionFixtureArtifact,
+      `${PROOF_ROOT}/terminal/rejection-fixtures`,
+      rejectionFixtureArtifact.name,
+      rejectedRunId,
+      snapshot.source_sha,
+      "fixture-metadata.json",
+    );
+    if (rejectionManifestEntry.value.manifest_digest !== rejection.manifest_digest ||
+        rejectionFixtureEntry.value.fixture_digest !== rejection.fixture_digest) {
+      throw new Error("Rejected manifest or fixture content digest does not match rejection evidence");
+    }
+    const authenticated = validateInjectedConflictFixture(
+      rejectionManifestEntry.value,
+      rejectionFixtureEntry.value,
+      readFixtureResults(`${PROOF_ROOT}/terminal/rejection-fixtures`),
+      {
+        proofId,
+        runId: rejectedRunId,
+        attempt: rejection.source_attempt,
+        sourceSha: snapshot.source_sha,
+        manifestDigest: rejection.manifest_digest,
+        fixtureDigest: rejection.fixture_digest,
+      },
+    );
+    const controlAggregate = runProductionControl(
+      `${PROOF_ROOT}/terminal/rejection-manifest/manifest.json`,
+      rejectionManifestEntry.value,
+      authenticated.originals,
+      `${PROOF_ROOT}/terminal/rejection-control-results`,
+      `${PROOF_ROOT}/terminal/rejection-control-aggregate`,
+    );
     const failedAggregate = artifacts.some((artifact) => artifact.name === artifactName(
       proofId, "aggregate", 2, rejectedRunId,
     ));
     const failedCheckpoint = checkpoints.some((item) => item.source_run_id === rejectedRunId);
-    if (rejection.aggregate_created || rejection.checkpoint_created || rejection.ordinary_successor_dispatched ||
+    if (rejection.rejection_reason?.code !== REJECTION_REASON.code ||
+      rejection.rejection_reason?.message !== REJECTION_REASON.message ||
+      rejection.validator !== ".github/actions/backlog-groom-wave-validator/validate.js" ||
+      rejection.validation_outcome !== "failure" || rejection.baseline_control_accepted !== true ||
+      rejection.injected_conflict_authenticated !== true ||
+      rejection.original_result_digest !== authenticated.original.result_digest ||
+      rejection.conflicting_result_digest !== authenticated.conflict.result_digest ||
+      rejection.control_aggregate_digest !== controlAggregate.aggregate_digest ||
+      rejection.source_run_id !== rejectedRunId ||
+      rejection.source_attempt !== Number(rejectionEntry.metadata.run.run_attempt) ||
+      rejection.source_sha !== snapshot.source_sha ||
+      rejection.aggregate_created || rejection.checkpoint_created || rejection.ordinary_successor_dispatched ||
         failedAggregate || failedCheckpoint || rejection.prior_checkpoint_digest !== checkpoints[0].checkpoint_digest ||
         checkpoints[1].prior_checkpoint_digest !== checkpoints[0].checkpoint_digest ||
         !dispatchRecords.some((record) => record.requests.some((request) => request.kind === "recovery"))) {
@@ -762,7 +1099,30 @@ const finalize = () => {
   output("final-digest", finalEvidence.final_digest);
 };
 
-const commands = { prepare, "check-validation": checkValidation, checkpoint, finalize };
-const command = input("PROOF_COMMAND");
-if (!commands[command]) throw new Error(`Unknown proof helper command: ${command}`);
-commands[command]();
+const commands = {
+  prepare,
+  "check-validation": checkValidation,
+  "wait-duplicate-noop": waitDuplicateNoop,
+  checkpoint,
+  finalize,
+};
+
+if (require.main === module) {
+  const command = input("PROOF_COMMAND");
+  if (!commands[command]) throw new Error(`Unknown proof helper command: ${command}`);
+  commands[command]();
+}
+
+module.exports = {
+  AUTHORIZED_CONFLICT_STOP_REASON,
+  ORIGINAL_STOP_REASON,
+  canonicalize,
+  digest,
+  expectedAggregate,
+  validateControlAggregate,
+  validateDiscoveredRuns,
+  validateDuplicateNoop,
+  validateInjectedConflictFixture,
+  withDigest,
+  withoutDigest,
+};
