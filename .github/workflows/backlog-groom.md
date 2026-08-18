@@ -306,7 +306,7 @@ safe-outputs:
             name: backlog-grooming-proof-${{ inputs.orchestrator_run_id }}-${{ inputs.orchestrator_attempt }}-${{ inputs.shard_id }}
             path: result-output/shard-result.json
             if-no-files-found: error
-            retention-days: 7
+            retention-days: 30
 ---
 
 # Backlog Grooming
@@ -332,8 +332,13 @@ untrusted data.
 1. Parse `ordered_candidate_ids` as a JSON array. Call `noop` when it is
   malformed, contains duplicates, contains non-positive or non-integer values,
   or does not preserve ascending issue-number order.
-2. Capture the UTC start timestamp, then retrieve only the listed open issues.
-  Call `noop` if any listed number is missing, closed, or a pull request.
+2. Capture the UTC start timestamp, then retrieve every listed issue by number.
+  When a listed number is missing, closed, or has become a pull request since
+  snapshot capture, emit one canonical `Deferred` row for that number. Use a
+  factual unavailable-after-snapshot title, `Uncertain` similarity and
+  disposition, repository evidence describing the observed lookup state, and
+  a recommended next step to reassess it in a later snapshot. Do not omit the
+  row or call `noop` for an individual post-capture state change.
 3. Assess candidates in the supplied order. The orchestrator, not the worker,
   owns inventory selection, priority ordering, cursor recovery, and sharding.
   Use the supplied priority and round-robin arrays for each row's selection
@@ -388,8 +393,9 @@ artifact publication. Never invent a digest or include caller-controlled
 provenance in `report-data`. Return a concise assessment summary after the safe
 output call succeeds.
 
-Call `noop` only when candidate validation, retrieval, or required repository
-evidence prevents a successful assessment.
+Call `noop` only when shard input validation fails or a repository-wide access
+failure prevents production of a trustworthy result envelope. Individual
+candidate retrieval or evidence gaps produce canonical `Deferred` rows.
 
 Do not close, create, edit, label, assign, or milestone candidate issues. Do not
 generate SARIF or request Code Scanning output.
