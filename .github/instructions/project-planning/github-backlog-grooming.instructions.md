@@ -6,10 +6,10 @@ applyTo: '**/.copilot-tracking/github-issues/backlog/**'
 # GitHub Backlog Grooming Instructions
 
 Use this instruction as the sole grooming-specific policy for automated backlog
-assessment and the interactive Grooming workflow. Use
-`github-backlog-planning.instructions.md` for planning templates, qualitative
-similarity comparison, autonomy, and state persistence. Use
-`github-backlog-update.instructions.md` for approved operation execution.
+assessment and the interactive Grooming workflow. Use the `backlog-management`
+skill for planning templates, qualitative similarity comparison, autonomy, and
+state persistence. Dispatch approved operations to `GitHub Backlog Executor`,
+which applies the `backlog-execute` protocol.
 
 ## Automated Shard Overlay
 
@@ -81,7 +81,7 @@ every continuously open issue must eventually enter an assessment cohort.
 
 Assess activity and ownership context, missing or outdated information,
 staleness signals, and possible overlap with other issues. Use the qualitative
-similarity framework in `github-backlog-planning.instructions.md` rather than
+similarity framework in the `backlog-management` skill rather than
 defining a second comparison policy.
 
 Every deeply assessed issue has exactly one outcome:
@@ -232,7 +232,7 @@ that requires maintainer repair.
 ## Interactive Grooming Handoff
 
 Store interactive Grooming state under the `backlog` planning type defined by
-`github-backlog-planning.instructions.md`. A grooming handoff may contain only
+the `backlog-management` skill. A grooming handoff may contain only
 `Update` or `Comment` operations and at most one mutating operation per issue.
 It never contains `Close`.
 
@@ -245,8 +245,8 @@ alternative operation. Reject labels, assignees, milestone, state,
 field. Record the issue's RFC 3339 `updated_at` value as `Expected Updated At`
 on every approved grooming operation.
 
-The executor must re-read and compare `Expected Updated At` immediately before
-mutation according to `github-backlog-update.instructions.md`. A stale skip
+`GitHub Backlog Executor` must re-read and compare `Expected Updated At`
+immediately before mutation. A stale skip
 invalidates the prior approval and requires issue rehydration and renewed
 approval.
 

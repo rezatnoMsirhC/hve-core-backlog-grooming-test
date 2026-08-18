@@ -55,7 +55,7 @@ concurrency:
 
 imports:
   - ../agents/github/backlog-grooming.agent.md
-  - ../instructions/github/github-backlog-grooming.instructions.md
+  - ../instructions/project-planning/github-backlog-grooming.instructions.md
 
 checkout: false
 

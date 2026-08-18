@@ -14,7 +14,7 @@ Return an evidence-backed advisory report for maintainers without changing
 candidate issues or making unsupported final dispositions.
 
 Follow the shared policy in
-[github-backlog-grooming.instructions.md](../../instructions/github/github-backlog-grooming.instructions.md).
+[github-backlog-grooming.instructions.md](../../instructions/project-planning/github-backlog-grooming.instructions.md).
 Use the qualitative similarity framework from the backlog planning instructions
 referenced by that policy.
 
@@ -60,7 +60,7 @@ or cursor state.
   issues.
 * Keep every disposition advisory and distinguish observed evidence from the
   maintainer decision to close or modify an issue.
-* Do not import or invoke GitHub Backlog Manager or any execution workflow.
+* Do not import or invoke Backlog Manager or any execution workflow.
 * Do not generate SARIF or request Code Scanning permissions.
 * Use only the shard-result safe output authorized by the calling workflow.
   The isolated result job owns validation, provenance, digesting, and artifact

@@ -303,6 +303,7 @@ jobs:
           PRIOR_CHECKPOINT_RUN_ID: ${{ needs.wave.outputs.prior-checkpoint-run-id }}
           PRIOR_CHECKPOINT_ARTIFACT_ID: ${{ needs.wave.outputs.prior-checkpoint-artifact-id }}
           PRIOR_CHECKPOINT_DIGEST: ${{ needs.wave.outputs.prior-checkpoint-digest }}
+          SCENARIO: ${{ inputs.scenario }}
           SOURCE_REF_NAME: ${{ needs.wave.outputs.source-ref-name }}
         with:
           script: |
@@ -326,7 +327,7 @@ jobs:
               workflow_id: "backlog-groom-multi-wave-proof.yml",
               ref: process.env.SOURCE_REF_NAME,
               inputs: {
-                "scenario": "${{ inputs.scenario }}",
+                "scenario": process.env.SCENARIO,
                 "protocol-version": "backlog-grooming-multi-wave-proof/v1",
                 "continuation-mode": "recovery",
                 "proof-id": process.env.PROOF_ID,
@@ -342,7 +343,7 @@ jobs:
             const material = {
               schema_version: "backlog-grooming-multi-wave-proof-dispatch/v1",
               proof_id: process.env.PROOF_ID,
-              scenario: "${{ inputs.scenario }}",
+              scenario: process.env.SCENARIO,
               source_run_id: String(context.runId),
               source_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
               source_sha: process.env.GITHUB_SHA,
@@ -494,6 +495,7 @@ jobs:
           CHECKPOINT_RUN_ID: ${{ needs.wave.outputs.checkpoint-run-id }}
           CHECKPOINT_ARTIFACT_ID: ${{ needs.wave.outputs.checkpoint-artifact-id }}
           CHECKPOINT_DIGEST: ${{ needs.wave.outputs.checkpoint-digest }}
+          SCENARIO: ${{ inputs.scenario }}
           SOURCE_REF_NAME: ${{ needs.wave.outputs.source-ref-name }}
         with:
           script: |
@@ -507,7 +509,7 @@ jobs:
               return JSON.stringify(value);
             };
             const nextWave = Number("${{ needs.wave.outputs.wave-number }}") + 1;
-            const nextMode = "${{ inputs.scenario }}" === "failed-wave-resume" && nextWave === 2
+            const nextMode = process.env.SCENARIO === "failed-wave-resume" && nextWave === 2
               ? "injection"
               : "ordinary";
             const request = {
@@ -521,7 +523,7 @@ jobs:
               workflow_id: "backlog-groom-multi-wave-proof.yml",
               ref: process.env.SOURCE_REF_NAME,
               inputs: {
-                "scenario": "${{ inputs.scenario }}",
+                "scenario": process.env.SCENARIO,
                 "protocol-version": "backlog-grooming-multi-wave-proof/v1",
                 "continuation-mode": nextMode,
                 "proof-id": process.env.PROOF_ID,
@@ -537,7 +539,7 @@ jobs:
             const material = {
               schema_version: "backlog-grooming-multi-wave-proof-dispatch/v1",
               proof_id: process.env.PROOF_ID,
-              scenario: "${{ inputs.scenario }}",
+              scenario: process.env.SCENARIO,
               source_run_id: String(context.runId),
               source_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
               source_sha: process.env.GITHUB_SHA,
