@@ -268,11 +268,13 @@ jobs:
             const { final_digest: recordedDigest, ...material } = evidence;
             const computedDigest = crypto.createHash("sha256").update(canonicalize(material)).digest("hex");
             const artifactId = Number(process.env.TERMINAL_ARTIFACT_ID);
+            const uploadedArtifactDigest = `sha256:${process.env.TERMINAL_ARTIFACT_DIGEST.replace(/^sha256:/, "")}`;
             const { data: artifact } = await github.rest.actions.getArtifact({ ...context.repo, artifact_id: artifactId });
             const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId });
             if (artifact.expired || artifact.name !== process.env.TERMINAL_ARTIFACT_NAME ||
                 artifact.workflow_run?.id !== context.runId || run.path !== ".github/workflows/backlog-groom-multi-wave-proof.yml" ||
-                run.head_sha !== process.env.GITHUB_SHA || !/^sha256:[a-f0-9]{64}$/.test(process.env.TERMINAL_ARTIFACT_DIGEST) ||
+              run.head_sha !== process.env.GITHUB_SHA || !/^sha256:[a-f0-9]{64}$/.test(uploadedArtifactDigest) ||
+              artifact.digest !== uploadedArtifactDigest ||
                 recordedDigest !== process.env.FINAL_DIGEST || computedDigest !== recordedDigest) {
               throw new Error("Terminal proof evidence artifact failed ID, producer, or digest authentication");
             }
