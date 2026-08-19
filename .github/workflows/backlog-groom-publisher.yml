@@ -233,12 +233,18 @@ jobs:
             let currentAggregateDigest = null;
             if (trackers.length === 1) {
               const currentStateMatch = trackers[0].body.match(/<!-- gh-aw:backlog-grooming-state (\{.*\}) -->/);
-              if (!currentStateMatch) throw new Error("Trusted backlog grooming tracker state is malformed");
-              const currentState = JSON.parse(currentStateMatch[1]);
-              if (!/^[a-f0-9]{64}$/.test(currentState.aggregate_digest)) {
-                throw new Error("Trusted backlog grooming tracker aggregate digest is invalid");
+              if (!currentStateMatch) {
+                if (aggregate.predecessor_aggregate_digest !== null) {
+                  throw new Error("Trusted backlog grooming tracker state is malformed");
+                }
+                core.info("Trusted marker-only tracker accepted for initial publication");
+              } else {
+                const currentState = JSON.parse(currentStateMatch[1]);
+                if (!/^[a-f0-9]{64}$/.test(currentState.aggregate_digest)) {
+                  throw new Error("Trusted backlog grooming tracker aggregate digest is invalid");
+                }
+                currentAggregateDigest = currentState.aggregate_digest;
               }
-              currentAggregateDigest = currentState.aggregate_digest;
             }
             if (currentAggregateDigest !== aggregate.aggregate_digest &&
                 currentAggregateDigest !== aggregate.predecessor_aggregate_digest) {
