@@ -165,9 +165,12 @@ jobs:
               const metadata = authenticatedMetadata ?? await getArtifactMetadata(artifactId);
               fs.mkdirSync(destination, { recursive: true });
               const archivePath = `${destination}.zip`;
-              await exec.exec("gh", [
-                "api", `/repos/${context.repo.owner}/${context.repo.repo}/actions/artifacts/${metadata.artifact.id}/zip`,
-              ], { outStream: fs.createWriteStream(archivePath) });
+              const { data: archive } = await github.rest.actions.downloadArtifact({
+                ...context.repo,
+                artifact_id: metadata.artifact.id,
+                archive_format: "zip",
+              });
+              fs.writeFileSync(archivePath, Buffer.from(archive));
               await exec.exec("unzip", ["-q", archivePath, "-d", destination]);
               fs.rmSync(archivePath, { force: true });
               return metadata;
@@ -1006,8 +1009,12 @@ jobs:
               );
               fs.mkdirSync(destination, { recursive: true });
               const archive = `${destination}.zip`;
-              await exec.exec("gh", ["api", `/repos/${context.repo.owner}/${context.repo.repo}/actions/artifacts/${parsedArtifactId}/zip`],
-                { outStream: fs.createWriteStream(archive) });
+              const { data } = await github.rest.actions.downloadArtifact({
+                ...context.repo,
+                artifact_id: parsedArtifactId,
+                archive_format: "zip",
+              });
+              fs.writeFileSync(archive, Buffer.from(data));
               await exec.exec("unzip", ["-q", archive, "-d", destination]);
               fs.rmSync(archive, { force: true });
             };
