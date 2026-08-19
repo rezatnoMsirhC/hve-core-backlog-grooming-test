@@ -90,6 +90,7 @@ jobs:
       manifest-artifact-id: ${{ steps.manifest.outputs.artifact-id }}
       planned-aic-per-wave: ${{ steps.plan.outputs.planned-aic-per-wave }}
       planned-sweep-aic: ${{ steps.plan.outputs.planned-sweep-aic }}
+      continuation-authenticated: ${{ steps.plan.outputs.continuation-authenticated }}
     steps:
       - name: Plan initiation, resume, or continuation
         id: plan
@@ -636,6 +637,7 @@ jobs:
             core.setOutput("manifest-digest", manifest.manifest_digest);
             core.setOutput("planned-aic-per-wave", String(snapshot.planned_aic_per_wave));
             core.setOutput("planned-sweep-aic", String(snapshot.planned_sweep_aic));
+            core.setOutput("continuation-authenticated", String(isContinuation));
       - name: Upload immutable sweep snapshot
         id: snapshot
         if: ${{ steps.plan.outputs.mode == 'new' }}
@@ -675,6 +677,7 @@ jobs:
       prior_cursor: ${{ matrix.shard.prior_cursor }}
       orchestrator_run_id: ${{ github.run_id }}
       orchestrator_attempt: ${{ fromJSON(github.run_attempt) }}
+      continuation_authenticated: ${{ needs.plan.outputs.continuation-authenticated == 'true' }}
       worker_timeout_minutes: ${{ matrix.shard.worker_timeout_minutes }}
     permissions:
       actions: write
